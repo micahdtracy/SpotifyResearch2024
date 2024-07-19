@@ -1,0 +1,873 @@
+---
+title: "DSCI293A Final Project"
+author: "Micah Tracy"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=TRUE, tidy=TRUE}
+knitr::opts_chunk$set(echo = TRUE, tidy=TRUE)
+```
+
+# Analysis of Spotify Data: Tracks and my Personal Listening Data
+
+In this project, I take a look at my personal Spotify listening history/trends. I also look at audio attributes for many different songs on Spotify, and how they relate to the genres of the songs.
+
+## Motivation and Questions
+
+I have always found the Spotify Wrapped data distributed to listeners at the end of each year very interesting. I have also always been interested in how Spotify uses user listening data and preferences when they introduce new features. I was curious if I could find any dataset with that kind of information across the world (or at least the United States) so I could see if I could find any trends.   
+
+I searched for Spotify data on Kaggle, and while I did not find exactly what I was looking for, I did find some interesting datasets. When looking at those datasets, I found that I am able to request my own listening data from Spotify, so that is what I ended up doing. I also found datasets with genres and audio attributes for various songs.   
+  
+Some of the questions I was interested in answering with the data I have include:  
+
+* During what time of day do I typically listen to music?
+* What genres do I listen to most often?
+* Do my most-listened-to songs have distinct audio attributes compared to other songs?
+* Do I listen to certain audio attributes more at certain times of the day?
+* Are certain genres more explicit than others?
+* Do certain genres tend to have higher valence than others?
+* Can songs with different genres be distinguished from one another through clustering based on their audio attributes?
+
+## Data Used in This Project
+
+* *My personal Spotify listening data*: This data includes tracks I listened to from March 17, 2018-March 21, 2024. Each row has timestamps, time listened, and data about the track such as its title, its Spotify ID, and its associated artist’s name.   
+* *The Million Song Dataset Metadata*: This dataset includes an ID for many tracks, their names, artists, album names, durations, and years.   
+* *Datasets from Kaggle*: I used multiple datasets from Kaggle which included Spotify ID’s and attributes for many songs. These attributes came from the Spotify API. One of these datasets also included associated MSD IDs, which I will use to find the tracks’ genres. I will use the combination of all of the datasets to look at audio attribute trends within themselves, and within my listening trends.  
+* *Tagtraum Genre Dataset*: One of my goals with this project is to see if I can distinguish genres by their audio attributes. To do that, I need songs associated with genres. This is easier said than done, because many datasets have more than one genre associated with each song, or there are hundreds of unique genres. This dataset is the result of a research paper which found a need to find overarching genres for songs in the Million Song Dataset. It contains MSD IDs representing tracks, and the associated genre for each one.   
+
+### Audio Attributes as Defined by the Spotify API  
+
+https://developer.spotify.com/documentation/web-api/reference/get-audio-features  
+
+* Acousticness: “A confidence measure from 0.0 to 1.0 of whether the track is acoustic. 1.0 represents high confidence the track is acoustic.”  
+* Danceability: “how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity.”  
+* Energy: “a perceptual measure of intensity and activity. Typically, energetic tracks feel fast, loud, and noisy. For example, death metal has high energy, while a Bach prelude scores low on the scale. Perceptual features contributing to this attribute include dynamic range, perceived loudness, timbre, onset rate, and general entropy.”  
+* Instrumentalness: “Predicts whether a track contains no vocals. "Ooh" and "aah" sounds are treated as instrumental in this context. Rap or spoken word tracks are clearly "vocal". The closer the instrumentalness value is to 1.0, the greater likelihood the track contains no vocal content.”  
+* Key: “The key the track is in. Integers map to pitches using standard Pitch Class notation. E.g. 0 = C, 1 = C♯/D♭, 2 = D, and so on. If no key was detected, the value is -1.”  
+* Liveness: “Detects the presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live.”  
+* Loudness: “The overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track and are useful for comparing relative loudness of tracks. Loudness is the quality of a sound that is the primary psychological correlate of physical strength (amplitude). Values typically range between -60 and 0 db.”  
+* Mode: “Mode indicates the modality (major or minor) of a track, the type of scale from which its melodic content is derived. Major is represented by 1 and minor is 0.”  
+* Speechiness: “Speechiness detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value. Values above 0.66 describe tracks that are probably made entirely of spoken words. Values between 0.33 and 0.66 describe tracks that may contain both music and speech, either in sections or layered, including such cases as rap music. Values below 0.33 most likely represent music and other non-speech-like tracks.”  
+* Tempo: “The overall estimated tempo of a track in beats per minute (BPM). In musical terminology, tempo is the speed or pace of a given piece and derives directly from the average beat duration.”  
+* Valence: “A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g. happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g. sad, depressed, angry).”  
+
+## Data Wrangling Approach
+
+First I import the necessary packages:
+
+```{r imports, message=FALSE, warning=FALSE}
+# I set message and warnings equal to false because these imports had a lot of messages and warnings (that don't affect my code performance) that took up a lot of space in the R-markdown output.
+library(tidyverse)  # dplyr and ggplot2
+library(jsonlite)   # reading in json files
+library(purrr)      # use as_vector from this 
+library(lubridate)  # creating date-time objects to pull info from
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+library(gridExtra)  # for graphing
+library(mosaic)     # used for tally function
+```
+
+### Personal Spotify Data   
+
+When it came to my personal Spotify data, I read in each file then joined them together. I filtered the tibble based on tracks that were not skipped, and that were not podcast episodes (I only wanted songs). I selected only the columns I wanted and I also converted the timestamp column to lubridate objects so that I could create columns with day of the week, year, and hour to use for visualizations. I also added a rowid column since the timestamps didn’t always uniquely identify each row. 
+
+I got this data by following the directions in this article:  
+https://support.spotify.com/us/article/data-rights-and-privacy-settings/
+
+Here I read in all of the data, which came in three separate files. 
+``` {r reading in personal Spotify data}
+# reading in Spotify data from 2024. I used the jsonlite package to read in the file since it came in as a JSON file.
+spot_data_2024 <- read_json("Streaming_History_Audio_2024_2.json", 
+                            simplifyVector=TRUE) %>% as_tibble()
+# adding rowid #s so that I can join the dataframes later since there isn't a unique key otherwise. 
+len2024 <- dim(spot_data_2024)[1]
+spot_data_2024 <- spot_data_2024 %>% mutate(rowid=1:len2024)
+
+# reading in Spotify data from 2022-2024
+spot_data_2022 <- read_json("Streaming_History_Audio_2022-2024_1.json", 
+                            simplifyVector=TRUE) %>% as_tibble()
+# adding rowid #s
+len2022 <- dim(spot_data_2022)[1]
+
+spot_data_2022 <- spot_data_2022 %>% mutate(rowid=(len2024+1):(len2022+len2024))
+
+# reading in Spotify data from 2018-2022
+spot_data_2018 <- read_json("Streaming_History_Audio_2018-2022_0.json",
+                            simplifyVector=TRUE) %>% as_tibble()
+# adding rowid #s
+len2018 <- dim(spot_data_2018)[1]
+spot_data_2018 <- spot_data_2018 %>% 
+  mutate(rowid=(len2024+len2022+1):(len2022+len2024+len2018))
+```
+
+Next, I merged all of the dataframes, then used dplyr commands to do various operations on the dataframe to make it easier to work with. I took out and renamed some columns, and made sure the data only contained unskipped songs. The fields in this data are now ts, ms_played, track_name, artist, spotify_id, and rowid. The dimension is 31,590x6. 
+``` {r clean and merge personal Spotify data}
+# Merging 2024 and 2022 data
+my_spot_data <- full_join(spot_data_2024, spot_data_2022, 
+          by=intersect(colnames(spot_data_2024), colnames(spot_data_2022)))
+# merging 2018 data with the full dataframe
+my_spot_data <- full_join(my_spot_data, spot_data_2018, 
+                          by=intersect(colnames(my_spot_data), 
+                                       colnames(spot_data_2018)))
+# Cleaning and filtering the data.
+# I take out podcast episode instances and skipped songs, cut "spotify:track:" out of the spotify_track_uri and rename it to spotify_id, and deselect all of the columns I don't want. I rename some columns and get rid of skipped songs (had to include NAs because it looks like that feature wasn't added until sometime in 2022. So it may not be super accurate for which songs I skipped and didn't in earlier years, but I would rather include more songs. I also add a rowid column since there is no unique key otherwise. I also make sure to make all of the strings into factor variables.
+
+# I used this website to figure out how to include NAs when filtering the skipped column.
+# https://stackoverflow.com/questions/46378437/how-to-filter-data-without-losing-na-rows-using-dplyr
+
+my_spot_data <- my_spot_data %>% 
+  filter(is.na(episode_name), (is.na(skipped)|skipped!=TRUE)) %>% 
+  mutate(spotify_id = substring(spotify_track_uri, 15)) %>% 
+  select(-username, -conn_country, -ip_addr_decrypted, -user_agent_decrypted,
+         -episode_name, -episode_show_name, -spotify_episode_uri, -offline,
+         -spotify_track_uri, -offline_timestamp, -incognito_mode, -skipped, -platform,
+         -reason_start, -reason_end, -shuffle, -master_metadata_album_album_name) %>% 
+  rename(track_name=master_metadata_track_name, 
+         artist=master_metadata_album_artist_name) %>% 
+  mutate(track_name=factor(track_name), artist=factor(artist), spotify_id=factor(spotify_id))
+```
+
+Adding date info to my Spotify data. The only problem with doing this is that since I had to add timezone information, it won't be accurate for the times that I have been traveling, but since most of the time I have been in the Eastern time zone, it should be mostly accurate.
+``` {r using lubridate to add date information to my Spotify data}
+
+# converting all of the dates in the dataframe into a lubridate object and into the correct timezone
+
+# This is the website I used to figure out how to use lubridate: 
+# https://rawgit.com/rstudio/cheatsheets/main/lubridate.pdf
+
+my_spot_data <- my_spot_data %>% mutate(ts=with_tz(time=ymd_hms(ts), tzone="America/New_York"))
+# adding a year column, an hour column, and a weekday column
+my_spot_data <- my_spot_data %>% mutate(hour=hour(ts), year=year(ts), date=date(ts), 
+                                        weekday=wday(ts))
+glimpse(my_spot_data)
+```
+
+### Million Song Metadata Dataset   
+
+Next, I read in data from The Million Song Dataset. This whole dataset has audio features and metadata for a million tracks, but I only read in the metadata because the whole dataset was not a realistic size to use. I used the data from this link:   
+http://millionsongdataset.com/pages/getting-dataset/ 
+
+I downloaded the SQLite database with metadata about each track. Since I don't know how to convert SQL to a dataframe in R, I used Python to read in the database and turn it into a csv, which is what I read in here. I wanted to use this data to match the artist and the song to the IDs so that I can track the genres. A couple problems with this dataset are that it does not contain Spotify IDs (which one of the Kaggle datasets will help with), and its latest version is only from 2011, so a good amount of songs will be missing. The dimension is 1,000,000x3. The columns are msd_id, track_name, and artist.   
+
+Note: I read this in (and all subsequent csv files) using read_csv instead of read.csv because supposedly it works more quickly, and it automatically returns a tibble. I also used col_types = cols(col_factor(NULL)) to turn strings into factors. I used this website to find how to do that:   https://forum.posit.co/t/how-to-read-columns-as-factors-with-read-csv-if-i-dont-know-the-factor-levels-in-advance/2682/5   
+
+``` {r reading in Million Song Dataset}
+# Reading in the MSD metadata, renaming some columns and cutting out unneeded columns.
+msd_full_data <- read_csv("track_exported_metadata.csv", show_col_types=FALSE, 
+                          col_types = cols(col_factor(NULL))) %>%  
+  select(track_id, title, artist_name) %>% rename(msd_id=track_id, track_name=title, 
+                                          artist=artist_name) %>% distinct()
+  
+glimpse(msd_full_data)
+```
+### Tagtraum Genre Dataset 
+
+I used read.delim to read in the dataset since it was a .txt file, using this website to figure out how to do that:   
+https://readr.tidyverse.org/reference/read_delim.html  
+
+I used the CD2C data from this website: https://www.tagtraum.com/msd_genre_datasets.html#bib    
+Hendrik Schreiber. Improving Genre Annotations for the Million Song Dataset. In Proceedings of the 16th International Society for Music Information Retrieval Conference (ISMIR), pages 241-247, Málaga, Spain, Oct. 2015.  
+
+The data came as a .cls file, so I used Notepad to resave it as a .txt file.  
+
+One problem with this data is that it is from 2015, so it definitely won't have genres for all of the songs I have listened to.   
+
+The 15 unique genres in this dataset are Rock, Rap, Latin, Jazz, Electronic, Pop, Metal, RnB, Country, Reggae, Blues, Folk, Punk, World, and New Age. 
+
+``` {r importing tagtraum genre dataset}
+# I set the quote argument to be blank since the strings were not surrounded by quotation marks, and I set the comment to equal "#" since there were comments at the top. 
+tagtraum_genres <- read.delim("msd_tagtraum_cd2c.txt", header=FALSE, quote="", 
+                              comment = "#") %>% as_tibble() %>%
+  rename(msd_id=V1, genre=V2) %>% mutate(msd_id=factor(msd_id), genre=factor(genre))
+
+glimpse(tagtraum_genres)
+```
+
+
+### Kaggle Datasets
+
+_Reading all of the Datasets In:_  
+
+Here I read in each of the datasets from Kaggle, only keeping the columns with audio attributes and Spotify IDs, and the column indicating explicitness and MSD IDs when I had them. I made separate dataframes when I had that information.  
+
+I also checked for NAs in the dataframes, and found that only id_and_attributes5 and id_and_attributes2 had NAs.
+
+``` {r first Kaggle dataset}
+# https://www.kaggle.com/datasets/byomokeshsenapati/spotify-song-attributes
+# I renamed the spotify_id column, and dropped unneeded columns. The distinct function drops duplicate songs. This data has danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo, spotify_id. Dimension is 4,737x12.
+id_and_attributes1 <- read_csv("Spotify_Song_Attributes.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  rename(spotify_id=id) %>% select(-genre, -uri, -type, -track_href, 
+                                   -analysis_url, -msPlayed, -trackName, 
+                                   -artistName, -time_signature, -duration_ms) %>% distinct()
+```
+
+``` {r reading in second Kaggle dataset}
+
+# https://www.kaggle.com/datasets/rodolfofigueroa/spotify-12m-songs
+# This dataset contains audio attributes for 1.2 million Spotify songs, and includes their Spotify IDs. The fields are spotify_id, explicit (with "False" or "True"), danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo
+# Dimension is 1,204,025x13
+# This line of code took about 1 minute to load. 
+id_and_attributes2 <- read_csv("tracks_features.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>%  
+  select(-album_id, -artists, -artist_ids, -track_number, -disc_number, 
+         -name, -album, -year, -release_date, -time_signature, -duration_ms) %>% 
+  rename(spotify_id=id) %>% distinct()
+
+# making a df with info about explicitness of tracks
+id_and_explicit2 <- id_and_attributes2 %>% select(explicit, spotify_id)
+
+# changing the attributes dataset to be only attributes (cutting out explicit)
+id_and_attributes2 <- id_and_attributes2 %>% select(-explicit) %>% distinct()
+```
+
+``` {r reading in the third Kaggle dataset}
+
+# https://www.kaggle.com/datasets/sergeserbinenko/2-million-song-spotify-dataset
+# This data was taken from the Spotify 1 million playlist dataset.
+# Fields are spotify_id, acousticness, danceability, energy, instrumentalness, key, liveness, loudness, mode, speechiness, tempo, valence. 
+# Dimension is: 1,477,073x12
+# The original dataset was a JSON file, but that took almost 6 minutes to read in, so instead, I used Python to convert it to a csv file, then read it in as a csv.
+id_and_attributes3 <- read_csv("spot_df_7_exported.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  rename(spotify_id=track_uri) %>% select(-time_signature, -duration_ms) %>% distinct()
+```
+
+``` {r reading in fourth Kaggle dataset}
+# https://www.kaggle.com/datasets/amitanshjoshi/spotify-1million-tracks
+# this data was extracted from Spotify using Spotipy
+# Dimension is 1,159,764x12. Columns are spotify_id, danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo
+id_and_attributes4 <- read_csv("spotify_data.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  select(-...1, -popularity, -genre, -time_signature, -artist_name, -track_name, -year, -duration_ms) %>% 
+  rename(spotify_id=track_id) %>% distinct()
+```
+
+``` {r reading in fifth Kaggle dataset}
+
+# https://www.kaggle.com/datasets/joebeachcapital/top-10000-spotify-songs-1960-now
+# This dataset has the top 10,000 songs on Spotify from 1960-now.
+# Columns are spotify_id, explicit, danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo.
+# Dimension is 9,951x13
+id_and_attributes5 <- read_csv("top_10000_1960-now.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  rename(spotify_id=`Track URI`, explicit=Explicit, danceability=Danceability, 
+         energy=Energy, key=Key, loudness=Loudness, mode=Mode, 
+         speechiness=Speechiness, acousticness=Acousticness, 
+         instrumentalness=Instrumentalness, liveness=Liveness, 
+         valence=Valence, tempo=Tempo) %>% 
+  select(spotify_id, explicit, danceability, energy, key, loudness, 
+         mode, speechiness, acousticness, instrumentalness, liveness, valence, 
+         tempo) %>% mutate(spotify_id = substring(spotify_id, 15)) %>% distinct()
+
+
+# making a dataframe with information about explicitness of songs
+id_and_explicit5 <- id_and_attributes5 %>% select(spotify_id, explicit) %>% distinct()
+
+# making the dataframe have only the attributes
+id_and_attributes5 <- id_and_attributes5 %>% select(-explicit) %>% distinct()
+```
+
+``` {r reading in sixth Kaggle dataset}
+
+# https://www.kaggle.com/datasets/joebeachcapital/30000-spotify-songs
+# This dataset has about 30,000 songs from the Spotify API
+# Dimension is 28,356x12. Columns are spotify_id, danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo
+id_and_attributes6 <- read_csv("spotify_songs.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  select(-track_popularity, -track_album_id, -playlist_name, -playlist_id, 
+         -playlist_genre, -playlist_subgenre, -track_name, -track_artist, 
+         -track_album_name, -track_album_release_date, -duration_ms) %>% 
+  rename(spotify_id=track_id) %>% distinct()
+```
+
+``` {r reading in seventh Kaggle dataset}
+# https://www.kaggle.com/datasets/undefinenull/million-song-dataset-spotify-lastfm
+# This dataframe combines MSD and Spotify and LastFM data. This will help me be able to match up Spotify IDs with MSD IDs.
+# Dimension: 50,674x13
+# Columns are msd_id, spotify_id, danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, tempo
+id_and_attributes7 <- read_csv("Music_Info.csv", show_col_types=FALSE, 
+                     col_types = cols(col_factor(NULL))) %>% 
+  select(-spotify_preview_url, -tags, -genre, -name, -artist, -year, -time_signature, -duration_ms) %>% 
+  rename(msd_id=track_id) %>% distinct()
+
+# making df with msd and spotify ids
+msd_and_id <- id_and_attributes7 %>% select(msd_id, spotify_id) %>% distinct()
+# deselecting msd id from the attribute df
+id_and_attributes7 <- id_and_attributes7 %>% select(-msd_id) %>% 
+  distinct()
+```
+
+Dropping NAs in the dataframes. 
+``` {r dropping NAs in attribute dataframes} 
+# Only two rows in id_and_attributes5 had NAs and the spotify_ids didn't make sense for those rows (ex: "The+Beatles:1962-1966:You%27ve+Got+To+Hide+Your+Love+Away:131"), so it made sense to drop them. 
+# Only one row in id_and_attributes1 has NAs and it is NA for the whole row so I definitely don't need it.
+
+# dropping those rows:
+id_and_attributes5 <- na.omit(id_and_attributes5)
+id_and_attributes1 <- na.omit(id_and_attributes1)
+
+```
+
+_Joining Kaggle Datasets Together:_  
+
+Now that all of the data contains the Spotify IDs and audio attributes, I have to join all of the Kaggle datasets.   
+
+One problem that I ran into was that some of the audio attributes were rounded slightly differently, which caused problems when I tried to full_join with multiple keys. There would be duplicate rows for many IDs, which obviously is not what we want to happen.   
+
+My solution was to anti-join first to make sure I was only adding tracks which I did not already have audio attribute information for. This may lead to slightly different values for some of the columns between the dataframes, but since the difference is only in rounding, I am not too concerned.   
+
+Then I used a full-join to join all of the datasets together. This led to a tibble with Spotify IDs and their audio attributes (danceability, energy, key, loudness, mode, speechiness, acousticness, instrumentalness, liveness, valence, and tempo)  
+
+``` {r joining attribute dataframes} 
+# this website helped me figure out how to join by multiple columns
+# https://stackoverflow.com/questions/27167151/merge-combine-columns-with-same-name-but-incomplete-data
+
+# This function anti-joins to find unique id's, then only full_joins with those unique ids.
+merge_attributes <- function(x_df, y_df) {
+  # checking for all the unique ids/rows in x that are not in y
+  unique_ids <- x_df %>% anti_join(y_df, by="spotify_id")
+  # joining the df's, using only ids that are not yet present
+  joined <- y_df %>% full_join(unique_ids, 
+                               by=intersect(colnames(unique_ids), colnames(y_df)))
+  return (joined)
+}
+
+# This function checks for duplicate spotify_ids to make sure the merge_attributes
+  # function worked correctly. If it worked, it should return a vector 0x1
+check_for_duplicates <- function(joined_df) {
+  # creates a summarized dataframe grouped by id, and filters where there are 
+    # duplicate occurrences of one ID.
+  double_spotify_ids <- joined_df %>% group_by(spotify_id) %>% 
+    summarize(N=n()) %>% filter(N>1) %>% select(spotify_id)
+  # returns the dimension of the df containing duplicate IDs.
+  return (dim(double_spotify_ids))
+}
+
+# Here I merge all of the dfs with spotify_ids and audio attributes. 
+# These functions take a while to run. 
+
+# merging 1 and 2
+all_ids_and_atts <- merge_attributes(id_and_attributes1, id_and_attributes2)
+# adding 3
+all_ids_and_atts <- merge_attributes(id_and_attributes3, all_ids_and_atts)
+# adding 4
+all_ids_and_atts <- merge_attributes(id_and_attributes4, all_ids_and_atts)
+# adding 5
+all_ids_and_atts <- merge_attributes(id_and_attributes5, all_ids_and_atts)
+# adding 6
+all_ids_and_atts <- merge_attributes(id_and_attributes6, all_ids_and_atts)
+# adding 7
+all_ids_and_atts <- merge_attributes(id_and_attributes7, all_ids_and_atts)
+
+# I then used the check_for_duplicates function to check the all_ids_and_atts dataframe, but it takes a while to run so I will not include it in the code. 
+# check_for_duplicates(all_ids_and_atts)
+# dim is 0x1: good
+
+# Now all_ids_and_atts has all of the Spotify IDs and audio attributes that we have.
+# Dimension is 3,629,539x12
+glimpse(all_ids_and_atts)
+```
+_Joining the Dataframe with Explicit Information:_  
+
+Since I have two dataframes with information about explicit content in tracks, I join them together.  
+
+First I converted all of the values to logical values and omitted any rows that were NA. After I joined and checked for duplicates, I found that some songs were marked true and some songs were marked false. I assume that true took priority over false so I only kept the rows which were true for those duplicate IDs. 
+
+I then added this explicit information to the dataframe with all Spotify IDs and attributes. 
+
+``` {r explicit information dataframe}
+# converting the explicit values to lowercase (in id_and_explicit2) and omitting any rows with NA and making sure they are distinct. Also converting to logical values. 
+id_and_explicit2 <- id_and_explicit2 %>% mutate(explicit=tolower(explicit)) %>% 
+  na.omit() %>% mutate(explicit=as.logical(explicit)) %>% distinct()
+id_and_explicit5 <- id_and_explicit5 %>% na.omit() %>% 
+  mutate(explicit=as.logical(explicit)) %>% distinct()
+
+# Joining the two dataframes we have with information on explicitness. 
+id_explicit <- id_and_explicit5 %>% full_join(id_and_explicit2, 
+                                              by=c("explicit", "spotify_id"))
+
+# When checking for duplicates, for some reason there were some duplicates in this data. I will assume that true takes priority over false, so I am only going to keep the rows for the duplicate ids that have true. 
+duplicate_exp_ids <- as_vector(id_explicit %>% group_by(spotify_id) %>%
+                                 summarize(N=n()) %>% filter(N>1) %>% 
+                                 select(spotify_id))
+
+# I used this website to figure out how to use case_when: https://www.statology.org/dplyr-conditional-filter/
+
+id_explicit <- id_explicit %>% 
+  filter(case_when(
+  spotify_id%in%duplicate_exp_ids ~ explicit,
+  TRUE ~ (explicit | !explicit)))
+
+# after checking for duplicates again, id_explicit has no more duplicates
+glimpse(id_explicit)
+
+# I then add this explicit information to our audio attributes dataframe.
+all_ids_and_atts <- all_ids_and_atts %>% left_join(id_explicit, by="spotify_id")
+
+```
+
+### Joining Datasets  
+
+Next, I joined all of the data I have with Spotify IDs, MSD IDs, audio attributes, and genres. I matched up Spotify IDs with their genres using the MSD IDs.
+
+``` {r joining Spotify IDs, MSD IDs, attributes, and genres}
+# This dataframe has Spotify IDs which have MSD IDs, and their associated audio attributes. 
+spot_msd_atts_genres <- all_ids_and_atts %>% inner_join(msd_and_id, by="spotify_id") 
+
+cat("When looking at the dimensions of the dataframes, we can see that we have MSD IDs for",
+    dim(spot_msd_atts_genres)[1], "songs out of the total", dim(all_ids_and_atts)[1],
+    "we have audio attributes for.")
+
+# Adding genres to the dataframe. Now it has Spotify ID's, MSD ID's, audio attributes, and genres
+spot_msd_atts_genres <- spot_msd_atts_genres %>% inner_join(tagtraum_genres, by="msd_id")
+# This dataframe has 22,348 songs.
+glimpse(spot_msd_atts_genres)
+```
+
+_Finding Unique Tracks and Adding Audio Attributes Where Possible_  
+
+Here I make a dataframe with just Spotify IDs for the unique tracks in my Spotify data. I make another dataframe adding the audio attributes to the unique track IDs, and another one with the artist and track name as well.  
+I have audio attributes for 7,130/14,703 unique tracks in my listening history.
+
+``` {r finding unique tracks and attributes}
+unique_tracks <- my_spot_data %>% select(spotify_id) %>% unique() 
+
+# length of unique tracks is 14,703
+# length(as_vector(unique_tracks))
+
+# finding how many of these spotify tracks I have audio attributes for
+# have audio attributes for 7,130 of them.
+my_spot_atts <- unique_tracks %>% inner_join(all_ids_and_atts, by="spotify_id")
+# do NOT have audio attributes for 7,573 of them. 
+
+# dataframe with the unique spotify_ids and artists and track names from all of my Spotify data
+my_ids_artist_track <- my_spot_data %>% select(spotify_id, artist, track_name) %>% 
+  distinct()
+```
+
+_Adding Genres to my Spotify Data_ 
+
+Since I have to use the MSD ID to get genres for songs, I looked at how many of my unique songs I have MSD IDs for. I have MSD IDs for only 108 out of 14,703 unique tracks. I made a dataframe with Spotify IDs, track names, and artist names for the tracks which do not have an MSD ID. I used the track and artist names to join with the MSD full dataset to get MSD IDs for more tracks, then added the genres. I got genres for 393 of my songs using this technique. I then added genres from the songs which I already had MSD IDs for, which added 29 more.   
+
+I have 422 tracks with genres, which is not a very large percentage of all of my unique tracks, but I think it is enough to do some visualizations and to find some trends. 
+
+``` {r adding genres to personal Spotify data}
+# finding how many of these spotify tracks I have MSD for (to look for them in the genre dataset)
+# I have MSD ID for 108 out of 14,703 unique tracks, which means I do not have MSD ID for 14,595.
+my_spot_msd <- unique_tracks %>% inner_join(msd_and_id, by="spotify_id")
+
+# looking at the songs I need MSD ID for (to classify based on genre)
+# gets spotify id, artist, and track name
+need_msd_id <- my_ids_artist_track %>% anti_join(msd_and_id, by="spotify_id")
+
+# getting the track names and artists from the msd_full_data for the genres we have, then joining with the spotify tracks I need genres for, joining by track_name and artist.
+# has 393 tracks
+my_spot_ids_and_genres <- msd_full_data %>% inner_join(tagtraum_genres, by="msd_id") %>% 
+  select(artist, track_name, genre) %>% distinct() %>% 
+  inner_join(need_msd_id, by=c("track_name", "artist")) %>% select(spotify_id, genre)
+
+# adding more genres with spotify ids to my_spot_ids_and_genres, first making sure they aren't in it yet. 
+# this adds 29 more
+my_spot_ids_and_genres <- unique_tracks %>% 
+  anti_join(my_spot_ids_and_genres, by="spotify_id") %>% 
+  inner_join(spot_msd_atts_genres, by="spotify_id") %>% select(spotify_id, genre) %>% 
+  full_join(my_spot_ids_and_genres, by=c("spotify_id", "genre"))
+# I now have 422 tracks with genres.
+glimpse(my_spot_ids_and_genres)
+```
+
+## Visualizations
+### During what time of day do I typically listen to music?  
+
+Since I have timestamps for each song (which specifically indicates when the song was done playing), I was curious if I happen to listen to music more during a certain time of day. 
+
+I grouped by hour to get the total milliseconds played, then divided by the total number of days on which I listened to music.  
+
+I colored the bars based on whether or not the average number of minutes for that hour was higher than the average number of minutes for any hour.   
+
+From 8 am to 9 pm, I tend to listen to more music than an average hour. I tend to listen to the most music at 4 pm, and the least at 4 am.   
+
+``` {r visualizing time per hour}
+# Making a dataframe with average time played per hour 
+
+# total_num_dates is the total number of days on which I listened to music
+total_num_dates <- length(unique(my_spot_data$date))
+
+# grouping by hour and finding the average time played per total number of days on which I listened to music
+my_avg_listening_time_data <- my_spot_data %>% group_by(hour) %>% 
+  summarize(tot_ms_played_hour=sum(ms_played)) %>%
+  mutate(avg_ms_per_hour_per_day=tot_ms_played_hour/total_num_dates) %>% 
+  mutate(avg_mins_per_hour_per_day=avg_ms_per_hour_per_day/60000)
+
+# creating a variable with the average number of minutes listened per any hour.
+avg_mins_per_any_hour <- sum(my_avg_listening_time_data$avg_mins_per_hour_per_day)/24
+
+# filling the bar based on whether or not the average for that hour is greater than the average for any particular hour.
+ggplot(my_avg_listening_time_data, aes(hour, avg_mins_per_hour_per_day)) + 
+  geom_bar(stat="identity", aes(fill=avg_mins_per_hour_per_day>avg_mins_per_any_hour)) +
+  labs(x="Hour of the Day", y="Average Number of Minutes Listened in that Hour", 
+       title="Average Number of Minutes Spent Listening to Music Per Hour",
+       fill="Is the average for that particular\nhour greater than the average\nfor any hour?") +
+  scale_fill_manual(values = c("TRUE"="#1ED760", "FALSE"="red"), 
+                    labels=c("TRUE"="Yes", "FALSE"="No")) +
+  scale_x_continuous(breaks=seq(0,23,1)) 
+```
+
+### What genres do I listen to most often?
+
+Since I was able to get genres for some of my songs, I was curious what genre most of them fall under. 
+
+One thing to keep in mind is that I was only able to get the genres for 422 out of 14,703 unique songs that were in my listening data. So this is really not a full representation of all of the songs I listen to.  
+
+I joined my Spotify data with the tibble containing Spotify IDs and their associated genres, then used group_by to group the genres and count the number of occurrences for each genre. I then made a simple bar graph to show the number of times I played each genre. I used a log function on the y-axis because the data was very skewed to the higher values.   
+
+Rock is my top genre (almost 3x as many plays as the next genre), followed by pop then country. Latin and New Age are my least popular genres.  
+
+``` {r my genres visualization}
+# using my_spot_ids_and_genres, which has 422 songs
+
+# used this website to try to see how to reorder the bars
+# https://stackoverflow.com/questions/62742488/unable-to-sort-data-in-descending-order-using-ggplot
+
+# I used a log y axis because the higher bars took up most of the graph.
+my_spot_data %>% inner_join(my_spot_ids_and_genres, by="spotify_id") %>% group_by(genre) %>% 
+  summarize(n_plays=n()) %>% ggplot(aes(x=reorder(genre,-n_plays), y=log(n_plays))) +
+  geom_bar(stat="identity", fill="#1ED760") + 
+  geom_text(aes(label=n_plays), color="black", position=position_stack(vjust=0.5), size=4) +
+  labs(x="Genre", y="Log(Number of Plays)", title="Number of Plays per Genre", 
+       subtitle="(Labels on bars indicate number of plays.)") +
+  theme(plot.title=element_text(size=15), plot.subtitle=element_text(size=10))
+```
+
+### Do my most-listened-to songs have distinct audio attributes compared to other songs?
+
+Given the audio attributes of acousticness, danceability, energy, instrumentalness, liveness, loudness, speechiness, tempo, and valence, I was curious if the songs I listen to more frequently have audio attributes different from songs I do not listen to as often.   
+
+To create this graph, I made a dataframe which had a column based on whether a song was in my “top songs” (played 15 or more times), was repeated (played 2-15 times), or was only played once. Using this dataframe, I created a heatmap with the average standardized values for different audio attributes.   
+
+I found that my more popular songs typically have __higher__ danceability, energy, loudness, tempo, and valence, and __lower__ acousticness, instrumentalness, liveness, and speechiness.
+
+``` {r top played songs comparison}
+
+# top_songs are my songs which I have played more than 15 times: gives 83 unique ID's
+top_songs <- my_spot_data %>% group_by(spotify_id) %>% 
+  summarize(number_of_plays=n()) %>% arrange(desc(number_of_plays)) %>% 
+  filter(number_of_plays>=15, !is.na(spotify_id))
+top_song_ids_df <- top_songs %>% select(spotify_id)
+
+# 72/83 of my top songs are in the attribute df- found using the following command
+# top_songs %>% inner_join(all_ids_and_atts, by="spotify_id") %>% dim()
+
+# dataframe of songs played more than once for graphing purposes
+repeated_songs <- my_spot_data %>% group_by(spotify_id) %>% 
+  summarize(number_of_plays=n()) %>% 
+  arrange(desc(number_of_plays)) %>% 
+  filter(number_of_plays>1, !is.na(spotify_id))
+
+# a dataframe with just the repeated song IDs: has 6,205 songs
+repeated_song_ids_df <- repeated_songs %>% select(spotify_id)
+
+# creating dataframes with the audio attributes for each category, making sure not to put songs into more than one category.
+not_rep_my_songs_atts <- my_spot_atts %>% anti_join(repeated_song_ids_df, by="spotify_id") %>% 
+  mutate(top="not repeated")
+rep_my_songs_atts <- my_spot_atts %>% semi_join(repeated_song_ids_df, by="spotify_id") %>%
+  anti_join(top_song_ids_df, by="spotify_id") %>% mutate(top="repeated")
+top_my_songs_atts <- my_spot_atts %>% semi_join(top_song_ids_df, by="spotify_id") %>%
+  mutate(top="top")
+  
+# has 7,129 rows 
+# joining the categories together
+top_vs_not_my_songs_atts <- full_join(not_rep_my_songs_atts, top_my_songs_atts,
+                                      by=intersect(colnames(not_rep_my_songs_atts),
+                                                   colnames(top_my_songs_atts))) %>% 
+  full_join(rep_my_songs_atts, by=intersect(colnames(.), colnames(rep_my_songs_atts)))
+
+# scaling the attributes so that I can more easily show the differences across categories. 
+top_or_not_scaled <- top_vs_not_my_songs_atts %>% select(danceability, energy, 
+                                                         loudness, speechiness, 
+                                                         acousticness, instrumentalness, 
+                                                         liveness, valence, tempo) %>% 
+  scale() %>% data.frame() %>% mutate(top=top_vs_not_my_songs_atts$top)
+ 
+top_vs_not_pivot <- top_or_not_scaled %>%
+  pivot_longer(cols = c("danceability", "energy", "loudness", "speechiness", "acousticness",
+                        "instrumentalness", "liveness", "valence", "tempo"), 
+               names_to = "attribute") %>% group_by(top, attribute) %>%
+  summarize(avg=sum(value)/n())
+
+# top=15 or more plays 
+# graphing the different groups of repeated a lot, only repeated once, or not repeated at all.
+# In this heat map, we can see which attributes have higher or lower values for my top songs.
+ggplot(top_vs_not_pivot, aes(x = attribute, y = factor(top), fill = avg)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", midpoint = 0) +
+  theme_minimal() +
+  labs(x = "Audio Attribute", y = "Listening Frequency", 
+       fill = "Average Value\n(Standardized)", 
+       title="Average Audio Attributes for Different Listening Frequencies") +
+  scale_x_discrete(labels=c("acousticness"="Acousticness", "danceability"="Danceability",
+                            "energy"="Energy", "instrumentalness"="Instrumentalness", 
+                            "liveness"="Liveness", "loudness"="Loudness", 
+                            "speechiness"="Speechiness", "tempo"="Tempo", 
+                            "valence"="Valence")) + 
+  scale_y_discrete(labels=c("top"="Played at least\n15 times", 
+                            "repeated"="Played at least\ntwice", 
+                            "not repeated"="Played only\nonce")) + 
+  theme(axis.text=element_text(size=6))
+```
+
+### Do I listen to certain audio attributes more at certain times of the day?
+
+I was curious whether I listen to certain audio attributes at certain times of day. For example, I feel like I tend to listen to more sad music at night.  
+
+I added the audio attributes to my listening history, then grouped by hour and found the averages for the audio attributes per hour.
+
+I made some exploratory bar graphs to see if there was any kind of relationship between hour and any of the variables, then made a time series graph for attributes that I thought showed a pattern. One of the more interesting graphs I found was between valence and energy. I used geom_path to plot the valence and energy trend throughout the course of a day.
+
+We can see that both energy and valence are lower during more “nighttime” hours, specifically between about 9 pm-5am. 4 am is an outlier, which makes sense because I haven’t listened to much music at 4 am, so if the data I have is much different from my normal listening patterns, it would be an outlier. When I looked at the rows where I listened to music at 4am it was ocean white noise that I listen to when I cannot sleep. 
+
+``` {r visualizing how certain audio attributes change during the day}
+
+# Here I join my spotify data with attributes for each song, and find the average of the valence and energy audio attributes for each hour. I only select the valence and energy columns so that I can scale them.
+valence_and_energy_hourly <- my_spot_data %>% 
+  inner_join(my_spot_atts, by="spotify_id") %>% group_by(hour) %>% 
+  summarize(avg_valence=mean(valence), avg_energy=mean(energy)) %>% 
+  select(avg_valence, avg_energy) 
+
+# I scale the dataframe then add the hour to it. 
+valence_and_energy_hourly_scaled <- data.frame(scale(valence_and_energy_hourly)) %>%
+  mutate(hour=0:23)
+
+# I create a time-series graph based on hour, looking at the values of valence and energy throughout the course of a day. I colored the points based on whether they were towards the beginning, middle, or end of the day.
+valence_and_energy_hourly_scaled %>% ggplot(aes(x=avg_valence, y=avg_energy)) + 
+  geom_path(colour = "grey50") + geom_point(aes(color=hour), size=3) + 
+  geom_text(aes(label=hour), vjust=1.5, check_overlap=TRUE) +
+  scale_color_gradient2(low="red", mid="yellow", high="blue", midpoint=12) + 
+  labs(x="Average Valence (Standardized)", y="Average Energy (Standardized)", 
+       color="Hour of the Day", 
+       title="Average Valence and Energy Values Over the Course of a Day") + 
+  theme(plot.title=element_text(size=16), axis.title=element_text(size=12))
+```
+
+### Are certain genres more explicit than others?
+
+To do this, I took the dataframe with audio attributes and genres, and filtered it to only those rows where the explicit column had a value of True or False. I then grouped by genre, found the number of songs in each genre using n(), and summed the number of explicit songs (I was able to just use sum since logical values can be coerced to ints). I used those sums and total numbers to find the percentage of explicit songs in each genre and passed that to geom_bar. 
+
+As I expected, rap has the highest percentage of explicit songs, with over 25%. It is followed by metal, blues, and jazz. Jazz is surprising to me, because I feel like the jazz I know does not typically have explicit lyrics.  Folk, Latin, New Age, RnB, and World did not have any explicit songs.  
+
+It is important to keep in mind that this is based on limited data: I do not have genres for every song, and I do not have explicit markings for every song.   
+
+``` {r explicit per genre plot}
+# barplot of % of percentage explicit songs per genre
+
+# used this website to see how to add percentage signs to axis labels 
+# https://thomasadventure.blog/posts/ggplot2-percentage-scale/
+
+# I can take advantage of coercion for logicals and just sum the explicit column to get the number of explicit songs. I grouped by genre then found the percentage of explicit songs for each one. 
+spot_msd_atts_genres %>% filter(!is.na(explicit)) %>% group_by(genre) %>% 
+  summarize(N=n(), num_explicit=sum(explicit)) %>% 
+  mutate(percent_explicit=100*num_explicit/N) %>% 
+  ggplot(aes(x=reorder(genre,-percent_explicit), y=percent_explicit)) + 
+  geom_bar(stat="identity", fill="#1ED760") + labs(x="Genre", y="Percentage of Explicit Songs",
+                                   title="Percentage of Explicit Songs in each Genre") +
+  theme(axis.title=element_text(size=12), plot.title=element_text(size=15), 
+        axis.text=element_text(size=6)) +
+  scale_y_continuous(labels = scales::percent_format(scale=1))
+```
+
+### Do certain genres tend to have higher valence than others?
+
+When I was looking at the Spotify API definitions for the audio attributes, I found that valence refers to the “musical positiveness” of a track. I was curious if different genres tend to have higher valence. For example, I thought that possibly blues would have a lower valence.  
+
+I made a geom_boxplot using the data with genres and audio attributes, putting the genres on the x-axis and the valence values on the y-axis, then reordering the boxes by their medians. All of the genres seem to have a pretty wide range of valence values, but the medians give a little more insight.   
+
+New Age has the lowest valence median, and Reggae has the highest valence median. 
+
+``` {r visualization of valence across genres}
+
+# this website helped me figure out how to sort a graph by median:
+# https://groups.google.com/g/ggplot2/c/8N0ofttOdcw?pli=1
+
+# looking at valence across genres: I made a simple boxplot based on the valence values for each genre. 
+ggplot(spot_msd_atts_genres, aes(x = reorder(genre, valence, FUN=median), y=valence)) +
+  geom_boxplot(aes(color=genre)) + labs(x="Genre", y="Valence", 
+                                        title="Valence Values across Genres") +
+  theme(legend.position="none", axis.text=element_text(size=8), plot.title=element_text(size=18), 
+        axis.title=element_text(size=14))
+```
+
+## Modeling  
+### Can songs with different genres be distinguished from one another through clustering based on their audio attributes?
+
+For the modeling portion of this project, I chose to cluster based on audio attributes in order to see if different genres could be distinguised based on their audio attributes. I did not use all of the genres since that would be more difficult to visualize and interpret. Initially, I had wanted to compare Country, Rap, and Pop since those are pretty popular genres with (possibly) more distinct characteristics, but the clusters didn't seem to be very telling, so I chose New Age, Rap, and Metal, which, as we will see, do have distinguishing characteristics.  
+
+I selected these genres then scaled the dataframe. I performed K-means clustering, using 3 centers. I then used pivot_longer to change the attribute columns into rows, and added cluster numbers to the data. I graphed this in a heat map to see which variables affected which clusters the most.   
+
+It looks like cluster 1 has relatively high tempo, energy, and loudness, and relatively low acousticness. Cluster 2 seems to have relatively high acousticness, and relatively low energy, speechiness, and valence. Cluster 3 looks to have relatively high danceability, liveness, speechiness, and valence, and relatively low tempo.  
+
+The most distinguishable characteristics seem to be energy (cluster 1 being the highest and cluster 2 being the lowest), speechiness (cluster 3 being the highest and cluster 2 being the lowest), and tempo (cluster 1 being the highest and cluster 3 being the lowest).
+
+``` {r clustering with genres/audio attributes and plotting attributes across clusters}
+
+# making a dataframe with just the numerical attributes and their associated genres, filtering to only be New Age, Rap, or Metal
+# has 3,574 observations, 3 different genres
+nrm_genre_and_atts <- spot_msd_atts_genres %>% select(-spotify_id, -key, 
+                                                  -msd_id, -mode, -explicit) %>%
+  filter(genre%in%c("New Age", "Rap", "Metal")) %>% mutate(genre=factor(genre))
+
+# selecting only the attributes, and scaling the df
+nrm_atts <- nrm_genre_and_atts %>% select(-genre) 
+nrm_atts_scaled <- data.frame(scale(nrm_atts))
+
+# setting a seed and performing kmeans clustering
+set.seed(123)
+km <- kmeans(nrm_atts_scaled, centers =3, iter.max=30, nstart = 25)
+
+# create data frame with the clustering results and standardized data, using pivot_longer
+nrm_atts_clustered <- nrm_atts_scaled %>% 
+  mutate(cluster = km$cluster) %>% 
+  pivot_longer(cols = c("danceability", "energy", "loudness", "speechiness", "acousticness",
+                        "instrumentalness", "liveness", "valence", "tempo"), 
+               names_to = "variable")
+
+# Plot the clustered data using geom_tile to better understand how the audio attributes look across the different clusters.
+ggplot(nrm_atts_clustered, aes(x = variable, y = factor(cluster), fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", midpoint = 0) +
+  theme_minimal() +
+  labs(x = "Attribute", y = "Cluster", fill = "Standardized\nValue", 
+       title="Audio Attribute Means Across Clusters") + 
+  theme(axis.text=element_text(size=6), plot.title=element_text(size=15),
+        axis.title=element_text(size=13), legend.title=element_text(size=13)) +
+  scale_x_discrete(labels=c("acousticness"="Acousticness", "danceability"="Danceability",
+                            "energy"="Energy", "instrumentalness"="Instrumentalness", 
+                            "liveness"="Liveness", "loudness"="Loudness", 
+                            "speechiness"="Speechiness", "tempo"="Tempo", 
+                            "valence"="Valence")) 
+```
+
+Next, I graph a plot showing the songs in these genres, labelling with their genre and coloring based on the cluster they are in. I plot their speechiness vs energy, which seems to be two of the most distinguishable characteristics between genres. I used check_overlap in this plot, because otherwise you would not have been able to read any of the labels. However, this could be a little misleading since it got rid of some data and is not showing all of the genres that are in each cluster. For these purposes however, it seems to work and be pretty accurate, which we will see in the following plot.  
+
+From this graph, it looks like cluster 1 contains mostly metal songs, with high energy and low-middle speechiness. Cluster 2 looks to contain mostly New Age songs, which have low energy and low speechiness. Cluster 3 looks like it contains mostly rap songs, with middle-high speechiness and mid-energy. 
+
+``` {r cluster scatterplot: speechiness vs energy}
+# plot a scatterplot of two variables against each other: speechiness and energy
+nrm_atts_scaled %>%
+  as_tibble() %>%
+  mutate(cluster = km$cluster, genre = nrm_genre_and_atts$genre) %>%
+  ggplot(aes(speechiness, energy, label=genre, color=factor(cluster))) + 
+  geom_text(check_overlap=TRUE) + labs(x="Speechiness", y="Energy", color="Cluster",
+                                       title="Speechiness vs Energy Across Genres and Clusters") +
+  theme(axis.text=element_text(size=11), plot.title=element_text(size=15),
+        axis.title=element_text(size=13), legend.title=element_text(size=13))
+
+```
+
+Finally, I find the proportions of each genre that were placed in each genre. I add the clusters to the original dataframe that included the clusters, and tallied up the counts for each clusters, using that to calculate proportions. I used pivot_wider to move the clusters from the rows to the columns to better see the proportions. I then made another heatmap indicating these proportions.  
+
+From this heatmap, we can see that the majority of Metal songs were placed in cluster 1, most New Age songs were placed in cluster 2, and most Rap songs were placed in cluster 3. This concurs with what we found in the scatterplot.
+
+``` {r genre and cluster proportion graph}
+
+# add clusters to dataframe with genres
+w_clusters <- nrm_genre_and_atts %>% mutate(cluster=km$cluster)
+
+# tallying up counts for each cluster
+# used this from the Modern Data Science with R book to figure out how to use tally
+# https://mdsr-book.github.io/mdsr2e/ch-learningII.html#dimension-reduction
+tallied <- data.frame(mosaic::tally(genre ~ cluster, data = w_clusters)) %>% 
+  group_by(genre) %>% mutate(total=sum(Freq)) %>% mutate(prop=Freq/total)
+
+# this dataframe has the genres and their frequencies in each cluster. 
+cluster_frequencies <- tallied %>% select(-Freq, -total) %>% 
+  pivot_wider(names_from=cluster, values_from=prop) %>%
+  rename("Cluster 1"="1", "Cluster 2"="2", "Cluster 3"="3")
+print(cluster_frequencies)
+
+# making another heatmap showing the proportions of each genre are in each cluster
+ggplot(tallied, aes(x=genre, y=factor(cluster), fill=prop)) +   
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", midpoint = 0.5) +
+  theme_minimal() +
+  labs(x = "Genre", y = "Cluster", fill = "Proportion", 
+       title="Proportion of each Genre Placed in each Cluster") + 
+  theme(axis.text=element_text(size=11), plot.title=element_text(size=15),
+        axis.title=element_text(size=13))
+```
+
+## Conclusions  
+
+After creating these visualizations, I can answer the questions I posed at the beginning of this project.  
+
+__During what time of day do I typically listen to music?__  
+
+I listen to music the most from 8am-9pm, especially between 3pm-5pm. This is most likely because those are the hours I am usually awake, and 3pm-5pm are usually when I am working on homework/don’t have much going on.  This may not be 100% accurate since I have been in multiple timezones when this data was collected, but I converted it to only one timezone.  
+
+__What genres do I listen to most often?__  
+
+My most popular genres are rock, pop, country, and jazz. Rock is the genre I listen to the most, with almost three times as many plays as pop. It seems rational that rock and pop are my top genres, as I agree that I listen to those genres a lot, and they are both pretty broad genres. I am surprised RnB is not higher because I think I listen to it pretty often, but this dataset does not include every song that I have listened to, so that could be why it is not higher, or I could be mislabelling the genres that I think I listen to.   
+
+__Do my most-listened-to songs have distinct audio attributes compared to other songs?__  
+
+My most-listened-to songs tend to have higher danceability, energy, loudness, tempo, and valence than the songs I do not listen to as often. When I think about the music I listen to most, this seems correct. I tend to listen to more upbeat music day-to-day, so it makes sense that the songs would have these attributes.  
+
+__Do I listen to certain audio attributes more at certain times of the day?__  
+
+Throughout the course of a day, the audio attributes that I listen to tend to change, as I expected. In the middle of the day, from about 6am-8pm, the music I listen to tends to become more positive (higher valence) and more energetic, while both the energy and valence tend to be lower during later and earlier hours. This could be because in the later hours, I want to listen to more mellow music to help me relax to go to bed, so the music would have lower energy. I also tend to listen to more sad music at night, so it makes sense that the valence is lower during those hours.   
+
+__Are certain genres more explicit than others?__  
+
+When comparing the percentage of explicit songs across genres, it does seem that certain genres tend to be more explicit. Rap has the highest percentage, which is what I expected, and it is followed by metal, which, although I do not listen to often, seems to make sense as well. However, jazz has a relatively high percentage of explicit songs, which was surprising to me. When I think of jazz, I think of Ella Fitzgerald and Louis Armstrong, who to my knowledge do not have many explicit songs. I was also surprised that rock was not higher on the list. However, rock is a pretty broad genre, so that could affect its percentage of explicit songs. As I mentioned earlier, I do not have all of the explicit information for every song in every genre, so this graph only represents the data I have, which could affect its accuracy.  
+
+__Do certain genres tend to have higher valence than others?__  
+
+When looking at valence across genres, I expected blues to be near the bottom, and possibly rock and pop to be closer to the top. This is not what I found in the data. In the data, New Age and Metal music had the lowest valence, and Latin and Reggae music had the highest valence. I researched New Age and Reggae music, as I am not too familiar with the genres. New Age music is the kind of music used for yoga and meditation, so it makes sense that it has low valence. Reggae music originated in Jamaica, and is similar to jazz and African folk rhythms. To me, that sounds like it would be pretty upbeat music, so I am not surprised it has the highest median valence. I was surprised that Blues was in the top half since to me it seems like that music would generally be more sad. My expectations were found to be false when it came to valence across genres. This could be due to the lack of data that we have, or due to my misunderstanding of different genres.  
+
+__Can songs with different genres be distinguished from one another through clustering based on their audio attributes?__  
+
+After clustering the songs which had genres of Rap, Metal, or New Age, we can see that the audio attributes clearly correlate to each genre. I had initially clustered all 15 of the genres, and I could not find any clear correlations between the genres and their clusters. However, at a small scale with very distinct genres, we can see that the clustering did seem to work to distinguish different genres based on audio attributes. We can see pretty clearly that New Age music is characterized by high acousticness, low energy, low speechiness, and low valence; Rap music is characterized by high danceability, high liveness, high speechiness, high valence, and low tempo; and Metal music is characterized by high energy, high loudness, and high tempo. 
+
+While these particular genres were able to be characterized by the audio attributes, more factors may go into the characterization of genres, such as lyrics, instruments used, "twang" in a voice (as in Country music), and other factors which are not represented in the audio attributes. Therefore, seeking to find clusters for all of the genres based on the limited audio attributes present in the data in this project may not be feasible. 
+
+## Further Studies
+
+This project could be built on in many ways, as there is a lot of data out there regarding songs and music platforms.  
+
+One extension I could do on this project is to use the Spotify API to get the attributes for all of my songs. Since I limited myself to only the data I could find on Kaggle, I did not have the attributes for every single song, but if I pulled the data myself, I may be able to get the attributes for more songs and therefore have a better representation of my listening trends.  
+
+Another extension I could do on this project is to look at the years the songs were published, and see if there is a certain "era" of music that I listen to more frequently. There was information on the years for most of the tracks, but many of the rows were missing data/had disagreeing values so I did not do any analysis on them. If I pulled from the Spotify API as I mentioned, the data would most likely be more agreeable than if I pulled from multiple sources.  
+
+I found a few datasets on Kaggle which contained lyrics for different songs. It would be interesting to do some kind of keyphrase analysis/create a word cloud of some sort to see what kinds of topics/themes I listen to songs about the most. 
+
+It would be interesting to get data from multiple Spotify users, and try to make some sort of recommendation algorithm based on the attributes of songs in their listening history. 
+
+
+## Resources
+
+https://developer.spotify.com/documentation/web-api/reference/get-audio-features  
+https://support.spotify.com/us/article/data-rights-and-privacy-settings/
+https://stackoverflow.com/questions/46378437/how-to-filter-data-without-losing-na-rows-using-dplyr
+https://rawgit.com/rstudio/cheatsheets/main/lubridate.pdf
+http://millionsongdataset.com/pages/getting-dataset/
+https://forum.posit.co/t/how-to-read-columns-as-factors-with-read-csv-if-i-dont-know-the-factor-levels-in-advance/2682/5 
+https://readr.tidyverse.org/reference/read_delim.html  
+https://www.tagtraum.com/msd_genre_datasets.html#bib   
+https://www.kaggle.com/datasets/byomokeshsenapati/spotify-song-attributes
+https://www.kaggle.com/datasets/rodolfofigueroa/spotify-12m-songs
+https://www.kaggle.com/datasets/sergeserbinenko/2-million-song-spotify-dataset
+https://www.kaggle.com/datasets/amitanshjoshi/spotify-1million-tracks
+https://www.kaggle.com/datasets/joebeachcapital/top-10000-spotify-songs-1960-now
+https://www.kaggle.com/datasets/joebeachcapital/30000-spotify-songs
+https://www.kaggle.com/datasets/undefinenull/million-song-dataset-spotify-lastfm
+https://stackoverflow.com/questions/27167151/merge-combine-columns-with-same-name-but-incomplete-data
+https://www.statology.org/dplyr-conditional-filter/
+https://stackoverflow.com/questions/62742488/unable-to-sort-data-in-descending-order-using-ggplot
+https://thomasadventure.blog/posts/ggplot2-percentage-scale/
+https://groups.google.com/g/ggplot2/c/8N0ofttOdcw?pli=1
+https://mdsr-book.github.io/mdsr2e/ch-learningII.html#dimension-reduction
+https://en.wikipedia.org/wiki/New-age_music
+https://en.wikipedia.org/wiki/Reggae
